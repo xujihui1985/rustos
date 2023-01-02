@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(test, no_main)]
+#![feature(abi_x86_interrupt)]
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
@@ -9,6 +10,21 @@ use x86_64::instructions::port::Port;
 use core::panic::PanicInfo;
 pub mod vga_buffer;
 pub mod serial;
+pub mod interrupts;
+pub mod gdt;
+
+pub fn init() {
+    gdt::init();
+    interrupts::init_idt();
+    unsafe{interrupts::PICS.lock().initialize()}; // perform PIC initialization
+    x86_64::instructions::interrupts::enable(); // enable interrupts
+}
+
+pub fn hlt_loop() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
 
 pub enum QemuExitCode {
     Success = 0x10,
@@ -21,7 +37,6 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
         port.write(exit_code as u32);
     }
 }
-
 
 
 pub trait Testable {
@@ -50,15 +65,7 @@ pub fn test_panic_handler(info: &PanicInfo) -> !{
     serial_println!("[failed]\n");
     serial_println!("Error: {}\n", info);
     exit_qemu(QemuExitCode::Failed);
-    loop{}
-}
-
-
-#[cfg(test)]
-#[no_mangle]
-pub extern "C" fn _start() -> !{
-    test_main();
-    loop{}
+    hlt_loop();
 }
 
 #[cfg(test)]
@@ -67,7 +74,22 @@ fn panic(info: &PanicInfo) -> !{
     test_panic_handler(info)
 }
 
+
+#[cfg(test)]
+#[no_mangle]
+pub extern "C" fn _start() -> !{
+    init();
+    test_main();
+    hlt_loop();
+}
+
 #[test_case]
 fn should_success() {
     assert_eq!(1, 1);
 }
+
+#[test_case]
+fn test_breakpoint_exception() {
+    x86_64::instructions::interrupts::int3();
+}
+
